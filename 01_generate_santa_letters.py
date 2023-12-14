@@ -15,16 +15,16 @@
 
 # COMMAND ----------
 
-import mlflow.gateway
-mlflow.gateway.set_gateway_uri("databricks")
+# import mlflow.gateway
+# mlflow.gateway.set_gateway_uri("databricks")
 
 # COMMAND ----------
 
 from databricks_genai_inference import ChatCompletion
 import os
 
-os.environ["DATABRICKS_TOKEN"] = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
-os.environ["DATABRICKS_HOST"] = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
+# os.environ["DATABRICKS_TOKEN"] = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+# os.environ["DATABRICKS_HOST"] = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()
 
 named_prompt = """What are the 100 most popular children's first name in North America over the past 20 years?"""
 response = ChatCompletion.create(model="llama-2-70b-chat",
@@ -85,12 +85,7 @@ system_prompt = """You are an AI assistant, helping children write letters to Sa
 
 def generate_letters(kid_name, gift_theme):
 
-    def fill_prompt(kid_name: str, gift_theme: str) -> str:
-        template = f"""Child's name: {kid_name} Christmas present category: {gift_theme} [/INST]
-        """
-        return template
-
-    letter_prompt = fill_prompt(kid_name, gift_theme)
+    letter_prompt = f"Child's name: {kid_name} Christmas present category: {gift_theme}"
     response = ChatCompletion.create(model="llama-2-70b-chat",
                                     messages=[{"role": "system", "content": system_prompt},
                                               {"role": "user","content": letter_prompt}],
@@ -118,22 +113,25 @@ gift_list = []
 for i in range(1000):
   names_list.append(random.choice(final_names_list))
   gift_list.append(random.choice(gift_topics_list))
-# for name in final_names_list:
-#   names_list.append(name)
-#   gift_list.append(random.choice(gift_topics_list))
 
 pandas_df = pd.DataFrame({'name': names_list,
                           'gift_list': gift_list})
 
-# spark_df = spark.createDataFrame(pandas_df)
-# display(spark_df)
-pandas_df.head()
+spark_df = spark.createDataFrame(pandas_df)
+display(spark_df)
 
 # COMMAND ----------
 
 # MAGIC %md ### Using Spark UDF to distribute calls, this only works on smaller datasets as timeout errors can typically occur
 
 # COMMAND ----------
+
+# MAGIC %md #### Mlflow AI Gateway
+
+# COMMAND ----------
+
+import mlflow.gateway
+mlflow.gateway.set_gateway_uri("databricks")
 
 import pyspark.sql.functions as F
 from pyspark.sql.types import StringType
@@ -157,8 +155,43 @@ def generate_letters(kid_name, gift_theme):
 
 generate_letters_udf = F.udf(generate_letters, StringType())
 
-# spark_df = spark.createDataFrame(pandas_df)
-# sample_df = spark_df.limit(20)
+letter_df = spark_df \
+  .cache()
+
+letter_df = letter_df \
+  .withColumn('letters', generate_letters_udf(F.col('name'), F.col('gift_list')))
+
+letter_df.write.format('delta').mode('overwrite').saveAsTable('ai_blog.gen_data.santa_letters')
+letter_df = spark.table('ai_blog.gen_data.santa_letters')
+display(letter_df)
+
+# COMMAND ----------
+
+# MAGIC %md #### Databricks Foundation Models API
+
+# COMMAND ----------
+
+import pyspark.sql.functions as F
+from pyspark.sql.types import StringType
+
+system_prompt = """You are an AI assistant, helping children write letters to Santa asking for Christmas Presents
+  Use the kid_name as the child's name provided in the instructions below
+  Use the gift_theme provided as the Christmas present category
+  Use language that a child would and do not exhibit sexist, racist, violent or any offensive langauge in these letters. Keep it at a length, a child would."""
+
+def generate_letters(kid_name, gift_theme):
+
+    letter_prompt = f"Child's name: {kid_name} Christmas present category: {gift_theme}"
+    response = ChatCompletion.create(model="llama-2-70b-chat",
+                                    messages=[{"role": "system", "content": system_prompt},
+                                              {"role": "user","content": letter_prompt}],
+                                    max_tokens=1500,
+                                    temperature=0.8).message
+
+    return response
+
+generate_letters_udf = F.udf(generate_letters, StringType())
+
 letter_df = spark_df \
   .cache()
 
@@ -166,7 +199,6 @@ letter_df = letter_df \
   .withColumn('letters', generate_letters_udf(F.col('name'), F.col('gift_list')))
   # .cache()
 
-letter_df.write.format('delta').mode('overwrite').saveAsTable('ai_blog.gen_data.santa_letters')
-# print(letter_df.count())
-letter_df = spark.table('ai_blog.gen_data.santa_letters')
+letter_df.write.format('delta').mode('overwrite').saveAsTable('ai_blog.gen_data.santa_letters_test')
+letter_df = spark.table('ai_blog.gen_data.santa_letters_test')
 display(letter_df)
